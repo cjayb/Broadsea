@@ -1,4 +1,5 @@
 version: '3.9'
+name: broadsea
 
 volumes:
   atlasdb-postgres-data:
@@ -11,6 +12,7 @@ volumes:
 services:
   
   traefik:
+    profiles: [ "init" ]
     image: docker.io/library/traefik:v2.9.4@sha256:4c388f477f5b7aa48420694d90db0ecb96b4ecede60b9b7589c87858abf87b60
     container_name: traefik
     restart: unless-stopped
@@ -28,9 +30,11 @@ services:
       - ./traefik/config.yml:/etc/traefik/config.yml:ro
       - ${BROADSEA_CERTS_FOLDER}:/etc/certs:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - bridge-network
 
   broadsea-content:
-    profiles: [ "default", "content" ]
+    profiles: [ "default", "content", "cjb" ]
     container_name: broadsea-content
     image: nginx
     restart: unless-stopped
@@ -48,7 +52,7 @@ services:
       - "traefik.enable=true"
 
   broadsea-hades:
-    profiles: [ "default", "hades" ]
+    profiles: [ "default", "hades", "cjb2" ]
     container_name: broadsea-hades
     image: ohdsi/broadsea-hades:4.2.1
     platform: "linux/amd64"
@@ -63,21 +67,28 @@ services:
     ports:
       - "8787:8787"
       - "6311:6311"
+    networks:
+      - bridge-network 
+
 
   # WebAPI and Atlas services based on the standard Docker Hub images -------------
   ohdsi-webapi-from-image:
-    profiles: [ "default", "webapi-from-image" ]
+    profiles: [ "default", "webapi-from-image", "cjb", "cjb2" ]
     image: docker.io/ohdsi/webapi:latest
     extends: 
       file: "ohdsi-webapi.yml"
       service: ohdsi-webapi
+    networks:
+      - bridge-network 
 
   ohdsi-atlas-from-image:
-    profiles: [ "default", "atlas-from-image" ]
+    profiles: [ "default", "atlas-from-image", "cjb", "cjb2" ]
     image: docker.io/ohdsi/atlas:latest
     extends: 
       file: "ohdsi-atlas.yml"
       service: ohdsi-atlas
+    networks:
+      - bridge-network 
 
   # WebAPI and Atlas services based on git repo (for developers) -------------
   ohdsi-webapi-from-git:
@@ -100,7 +111,7 @@ services:
   # -----------------------------------------------------------------
 
   broadsea-atlasdb:
-    profiles: [ "default", "atlasdb" ]
+    profiles: [ "default", "atlasdb", "cjb", "cjb2" ]
     image: ohdsi/broadsea-atlasdb:2.0.0
     container_name: broadsea-atlasdb
     platform: "linux/amd64"
@@ -112,12 +123,18 @@ services:
       - "5432:5432"
     volumes:
      - atlasdb-postgres-data:/var/lib/postgresql/data
-     - ./100_populate_source_source_daimon.sql:/docker-entrypoint-initdb.d/100_populate_source_source_daimon.sql:ro
+     - ./100_populate_source_source_daimon.sql:/100_populate_source_source_daimon.sql:ro
+     - ./init_atlasdb.sh:/init_atlasdb.sh
+     # this won't work: 100_* will not be executed from default entrypoint :(
+     # need to run 'init_atlasdb.sh' from within running container, then restart
+     # the webapi-container (from Docker desktop)---what a mess!
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - bridge-network 
 
   broadsea-solr-vocab:
     profiles: [ "solr-vocab-no-import", "solr-vocab-with-import" ]
@@ -159,7 +176,7 @@ services:
              -X POST ${SOLR_VOCAB_ENDPOINT}/${VOCAB_VERSION}/dataimport?command=full-import&entity=concept
 
   broadsea-ares:
-    profiles: [ "ares" ]
+    profiles: [ "ares", "cjb2" ]
     container_name: broadsea-ares
     restart: unless-stopped
     build:
@@ -168,6 +185,8 @@ services:
       - ${ARES_DATA_FOLDER}:/usr/share/nginx/html/ares/data:ro
     labels:
       - "traefik.enable=true"
+    networks:
+      - bridge-network
 
 
   broadsea-omop-vocab-load:
@@ -185,8 +204,10 @@ services:
       UMLS_API_KEY: ${UMLS_API_KEY}
     volumes:
       - ./omop_vocab:/tmp
+      - /Users/cjb/data/omop-cdm/vocabulary_athena_20230714:/tmp/files
     entrypoint: ["sh", "/tmp/scripts/load_omop_vocab.sh" ]
-
+    networks:
+      - bridge-network
 
   broadsea-phoebe-load:
     profiles: [ "phoebe-pg-load" ]
@@ -203,4 +224,8 @@ services:
     volumes:
       - ./phoebe:/tmp
     entrypoint: ["sh", "/tmp/load_phoebe.sh" ]
-    
+
+networks:
+  # becomes broadsea_bridge-network!
+  bridge-network:
+    driver: bridge
